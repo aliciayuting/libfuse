@@ -371,7 +371,8 @@ static int subdir_read_buf(const char *path, struct fuse_bufvec **bufp,
 	char *newpath;
 	int err = subdir_addpath(d, path, &newpath);
 	if (!err) {
-		err = fuse_fs_read_buf(d->next, newpath, bufp, size, offset, fi);
+		void (**free_ptr)(void*) = NULL;
+		err = fuse_fs_read_buf(d->next, newpath, bufp, size, offset, fi, free_ptr);
 		free(newpath);
 	}
 	return err;

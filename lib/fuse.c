@@ -1723,21 +1723,29 @@ int fuse_fs_open(struct fuse_fs *fs, const char *path,
 	}
 }
 
-static void fuse_free_buf(struct fuse_bufvec *buf)
+static void fuse_free_buf(struct fuse_bufvec *buf, void (**free_ptr)(void*))
 {
 	if (buf != NULL) {
 		size_t i;
 
-		for (i = 0; i < buf->count; i++)
-			if (!(buf->buf[i].flags & FUSE_BUF_IS_FD))
-				free(buf->buf[i].mem);
+		for (i = 0; i < buf->count; i++) {
+			if (!(buf->buf[i].flags & FUSE_BUF_IS_FD)) {
+				// TODO: chuhan
+				if (free_ptr == NULL || (*free_ptr) == NULL) {
+					free(buf->buf[i].mem);
+				} else {
+					printf("\nCalled free_ptr at fuse_free_buf\n");
+					(*free_ptr)(buf->buf[i].mem);
+				}
+			}
+		}
 		free(buf);
 	}
 }
 
 int fuse_fs_read_buf(struct fuse_fs *fs, const char *path,
 		     struct fuse_bufvec **bufp, size_t size, off_t off,
-		     struct fuse_file_info *fi)
+		     struct fuse_file_info *fi, void (**free_ptr)(void*))
 {
 	fuse_get_context()->private_data = fs->user_data;
 	if (fs->op.read || fs->op.read_buf) {
@@ -1748,8 +1756,11 @@ int fuse_fs_read_buf(struct fuse_fs *fs, const char *path,
 				"read[%llu] %zu bytes from %llu flags: 0x%x\n",
 				(unsigned long long) fi->fh,
 				size, (unsigned long long) off, fi->flags);
-
-		if (fs->op.read_buf) {
+		if (fs->op.read_buf_fptr) {
+			printf("\nEntered read_buf_fptr\n");
+			res = fs->op.read_buf_fptr(path, bufp, size, off, fi, free_ptr);
+		} else if (fs->op.read_buf) {
+			printf("\nEntered fuse_fs_read_buf\n");
 			res = fs->op.read_buf(path, bufp, size, off, fi);
 		} else {
 			struct fuse_bufvec *buf;
@@ -1813,7 +1824,10 @@ int fuse_fs_read(struct fuse_fs *fs, const char *path, char *mem, size_t size,
 				dst.buf[0].mem = mem;
 				res = fuse_buf_copy(&dst, buf, 0);
 			}
-			fuse_free_buf(buf);
+			// TODO: chuhan
+			void (*null_fptr)(void*) = NULL;
+			void (**free_ptr)(void*) = &null_fptr;
+			fuse_free_buf(buf, free_ptr);
 		} else {
 			res = fs->op.read(path, mem, size, off, fi);
 		}
@@ -1852,6 +1866,7 @@ int fuse_fs_write_buf(struct fuse_fs *fs, const char *path,
 				fi->flags);
 
 		if (fs->op.write_buf) {
+			printf("\nWrite_buf\n");
 			res = fs->op.write_buf(path, buf, off, fi);
 		} else {
 			void *mem = NULL;
@@ -1861,7 +1876,9 @@ int fuse_fs_write_buf(struct fuse_fs *fs, const char *path,
 			if (buf->count == 1 &&
 			    !(buf->buf[0].flags & FUSE_BUF_IS_FD)) {
 				flatbuf = &buf->buf[0];
+				printf("\nWrite, is Not FD\n");
 			} else {
+				printf("\nWrite, fuse_buf_copy\n");
 				res = -ENOMEM;
 				mem = malloc(size);
 				if (mem == NULL)
@@ -1879,9 +1896,11 @@ int fuse_fs_write_buf(struct fuse_fs *fs, const char *path,
 			res = fs->op.write(path, flatbuf->mem, flatbuf->size,
 					   off, fi);
 out_free:
+			printf("\nGot to out_free\n");
 			free(mem);
 		}
 out:
+		printf("\nGot to out\n");
 		if (fs->debug && res >= 0)
 			fuse_log(FUSE_LOG_DEBUG, "   write%s[%llu] %u bytes to %llu\n",
 				fi->writepage ? "page" : "",
@@ -3264,17 +3283,20 @@ static void fuse_lib_open(fuse_req_t req, fuse_ino_t ino,
 static void fuse_lib_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 			  off_t off, struct fuse_file_info *fi)
 {
+	printf("\nEntered fuse_lib_read\n");
 	struct fuse *f = req_fuse_prepare(req);
 	struct fuse_bufvec *buf = NULL;
 	char *path;
 	int res;
 
+	void (*null_fptr)(void*) = NULL;
+	void (**free_ptr)(void*) = &null_fptr;
 	res = get_path_nullok(f, ino, &path);
 	if (res == 0) {
 		struct fuse_intr_data d;
 
 		fuse_prepare_interrupt(f, req, &d);
-		res = fuse_fs_read_buf(f->fs, path, &buf, size, off, fi);
+		res = fuse_fs_read_buf(f->fs, path, &buf, size, off, fi, free_ptr);
 		fuse_finish_interrupt(f, req, &d);
 		free_path(f, ino, path);
 	}
@@ -3284,7 +3306,7 @@ static void fuse_lib_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 	else
 		reply_err(req, res);
 
-	fuse_free_buf(buf);
+	fuse_free_buf(buf, free_ptr);
 }
 
 static void fuse_lib_write_buf(fuse_req_t req, fuse_ino_t ino,
@@ -4737,7 +4759,7 @@ void fuse_lib_help(struct fuse_args *args)
 			   fuse_lib_opt_proc) == -1
 	    || !conf.modules)
 		return;
-	
+
 	char *module;
 	char *next;
 	struct fuse_module *m;
@@ -4755,7 +4777,7 @@ void fuse_lib_help(struct fuse_args *args)
 	}
 }
 
-				      
+
 
 static int fuse_init_intr_signal(int signum, int *installed)
 {
