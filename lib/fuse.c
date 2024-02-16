@@ -1723,21 +1723,26 @@ int fuse_fs_open(struct fuse_fs *fs, const char *path,
 	}
 }
 
-static void fuse_free_buf(struct fuse_bufvec *buf)
+static void fuse_free_buf(struct fuse_bufvec *buf, void (**free_ptr)(void*))
 {
 	if (buf != NULL) {
 		size_t i;
-
-		for (i = 0; i < buf->count; i++)
-			if (!(buf->buf[i].flags & FUSE_BUF_IS_FD))
-				free(buf->buf[i].mem);
+		for (i = 0; i < buf->count; i++) {
+			if (!(buf->buf[i].flags & FUSE_BUF_IS_FD)) {
+				if (free_ptr == NULL || (*free_ptr) == NULL) {
+					free(buf->buf[i].mem);
+				} else {
+					(*free_ptr)(buf->buf[i].mem);
+				}
+			}
+		}
 		free(buf);
 	}
 }
 
 int fuse_fs_read_buf(struct fuse_fs *fs, const char *path,
 		     struct fuse_bufvec **bufp, size_t size, off_t off,
-		     struct fuse_file_info *fi)
+		     struct fuse_file_info *fi, void (**free_ptr)(void*))
 {
 	fuse_get_context()->private_data = fs->user_data;
 	if (fs->op.read || fs->op.read_buf) {
@@ -1749,7 +1754,9 @@ int fuse_fs_read_buf(struct fuse_fs *fs, const char *path,
 				(unsigned long long) fi->fh,
 				size, (unsigned long long) off, fi->flags);
 
-		if (fs->op.read_buf) {
+		if (fs->op.read_buf_fptr) {
+			res = fs->op.read_buf_fptr(path, bufp, size, off, fi, free_ptr);
+		} else if (fs->op.read_buf) {
 			res = fs->op.read_buf(path, bufp, size, off, fi);
 		} else {
 			struct fuse_bufvec *buf;
@@ -1813,7 +1820,8 @@ int fuse_fs_read(struct fuse_fs *fs, const char *path, char *mem, size_t size,
 				dst.buf[0].mem = mem;
 				res = fuse_buf_copy(&dst, buf, 0);
 			}
-			fuse_free_buf(buf);
+			void (**free_ptr)(void*) = NULL;
+			fuse_free_buf(buf, free_ptr);
 		} else {
 			res = fs->op.read(path, mem, size, off, fi);
 		}
@@ -3268,13 +3276,15 @@ static void fuse_lib_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 	struct fuse_bufvec *buf = NULL;
 	char *path;
 	int res;
+	void (*null_fptr)(void*) = NULL;
+	void (**free_ptr)(void*) = &null_fptr;
 
 	res = get_path_nullok(f, ino, &path);
 	if (res == 0) {
 		struct fuse_intr_data d;
 
 		fuse_prepare_interrupt(f, req, &d);
-		res = fuse_fs_read_buf(f->fs, path, &buf, size, off, fi);
+		res = fuse_fs_read_buf(f->fs, path, &buf, size, off, fi, free_ptr);
 		fuse_finish_interrupt(f, req, &d);
 		free_path(f, ino, path);
 	}
@@ -3284,7 +3294,7 @@ static void fuse_lib_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 	else
 		reply_err(req, res);
 
-	fuse_free_buf(buf);
+	fuse_free_buf(buf, free_ptr);
 }
 
 static void fuse_lib_write_buf(fuse_req_t req, fuse_ino_t ino,

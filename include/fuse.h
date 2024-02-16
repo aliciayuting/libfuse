@@ -772,6 +772,18 @@ struct fuse_operations {
 	 */
 	int (*read_buf) (const char *, struct fuse_bufvec **bufp,
 			 size_t size, off_t off, struct fuse_file_info *);
+
+     /** Read buf from an open file in a buffer, managed by caller
+      * Similar to read_buf, but this function instead of using the free()
+      * from standard library, it is using the free_ptr function that 
+      * the caller passed in. 
+      * It gives the flexibility of the caller to manage the
+      * buffer memory, to directly cache the memeory without extra copy
+      * when this function gets called.
+     */
+     int (*read_buf_fptr) (const char *, struct fuse_bufvec **bufp,
+               size_t size, off_t off, struct fuse_file_info *, void (**free_ptr)(void*));
+
 	/**
 	 * Perform BSD file locking operation
 	 *
@@ -1198,7 +1210,7 @@ int fuse_fs_read(struct fuse_fs *fs, const char *path, char *buf, size_t size,
 		 off_t off, struct fuse_file_info *fi);
 int fuse_fs_read_buf(struct fuse_fs *fs, const char *path,
 		     struct fuse_bufvec **bufp, size_t size, off_t off,
-		     struct fuse_file_info *fi);
+		     struct fuse_file_info *fi, void (**free_ptr)(void*));
 int fuse_fs_write(struct fuse_fs *fs, const char *path, const char *buf,
 		  size_t size, off_t off, struct fuse_file_info *fi);
 int fuse_fs_write_buf(struct fuse_fs *fs, const char *path,
